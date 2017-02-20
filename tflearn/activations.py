@@ -6,8 +6,8 @@ import tensorflow as tf
 import tflearn
 from . import initializations
 from . import variables as va
-from .utils import get_from_module
-
+from .utils import get_from_module, get_incoming_shape
+import math
 
 def get(identifier):
     if hasattr(identifier, '__call__'):
@@ -18,6 +18,65 @@ def get(identifier):
 
 """ Activation Functions """
 
+def stagger(x):
+    """
+    -0.01 =< x <= 0.01, return 0
+    0.01 =< x , return x - 0.01
+    x <= -0.01, return x + 0.01
+    """
+    y = tf.maximum(x - 0.01, 0)
+    z = tf.minimum(x + 0.01, 0)
+    return tf.select(tf.greater_equal(x, 0), y, z)
+
+def bi_relu(x):
+    """
+    return [relu(x), relu(-x)]
+    """
+    res = tf.concat(3, [tf.nn.relu(x), tf.nn.relu(tf.neg(x))])
+    #print(tf.shape(res))
+    
+    return res
+
+def reverse_relu(x):
+
+    return tf.nn.relu(tf.neg(x))
+
+
+def level_relu(x, alpha = -2.5):
+    y = tf.mul(x, tf.to_float(tf.greater_equal(x, alpha)))
+    z = tf.mul(x, tf.to_float(tf.less(x, alpha)))
+    return tf.concat(3, [y, z])
+
+            
+def BiBU(x):
+    """
+    A trick from [Sergey Ioffe](http://stackoverflow.com/a/36480182)
+    Binary Branch Units
+    """
+    input_shape = get_incoming_shape(x)
+    binary_x = tf.sign(x)
+    forward = tf.concat(len(input_shape)-1, [tf.nn.relu(binary_x),  tf.neg(tf.nn.relu(tf.neg(binary_x)))])
+    backward = tf.concat(len(input_shape)-1, [tf.nn.relu(x),  tf.neg(tf.nn.relu(tf.neg(x)))])
+    
+    return backward + tf.stop_gradient(forward - backward)
+    
+
+def twins_relu(x):
+    """
+    return [relu(x), -relu(-x)]
+    """
+    from tflearn import utils
+    #from tflearn.layers.conv import max_pool_2d
+    input_shape = get_incoming_shape(x)
+    res = tf.concat(len(input_shape)-1, [tf.nn.relu(x),  tf.neg(tf.nn.relu(tf.neg(x)))])
+    
+    #print(tf.shape(res))
+    
+    return res
+
+def abs(x):
+    
+    return tf.abs(x)
 
 def linear(x):
     """ Linear.
@@ -173,8 +232,8 @@ def leaky_relu(x, alpha=0.1, name="LeakyReLU"):
 
     # If incoming Tensor has a scope, this op is defined inside it
     i_scope = ""
-    if hasattr(x, 'scope'):
-        if x.scope: i_scope = x.scope
+    #if hasattr(x, 'scope'):
+        #if x.scope: i_scope = x.scope
     with tf.name_scope(i_scope + name) as scope:
         x = tf.nn.relu(x)
         m_x = tf.nn.relu(-x)
