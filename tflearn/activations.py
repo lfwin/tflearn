@@ -18,40 +18,12 @@ def get(identifier):
 
 """ Activation Functions """
 
-def stagger(x):
-    """
-    -0.01 =< x <= 0.01, return 0
-    0.01 =< x , return x - 0.01
-    x <= -0.01, return x + 0.01
-    """
-    y = tf.maximum(x - 0.01, 0)
-    z = tf.minimum(x + 0.01, 0)
-    return tf.select(tf.greater_equal(x, 0), y, z)
-
-def bi_relu(x):
-    """
-    return [relu(x), relu(-x)]
-    """
-    res = tf.concat(3, [tf.nn.relu(x), tf.nn.relu(tf.neg(x))])
-    #print(tf.shape(res))
-    
-    return res
-
-def reverse_relu(x):
-
-    return tf.nn.relu(tf.neg(x))
-
-
-def level_relu(x, alpha = -2.5):
-    y = tf.mul(x, tf.to_float(tf.greater_equal(x, alpha)))
-    z = tf.mul(x, tf.to_float(tf.less(x, alpha)))
-    return tf.concat(3, [y, z])
-
             
 def BiBU(x):
     """
     A trick from [Sergey Ioffe](http://stackoverflow.com/a/36480182)
-    Binary Branch Units
+    Binary Branch Units, binarizing twins_relu
+    works not good, shold continue experimenting new binary methods for twins_relu.
     """
     input_shape = get_incoming_shape(x)
     binary_x = tf.sign(x)
@@ -74,9 +46,6 @@ def twins_relu(x):
     
     return res
 
-def abs(x):
-    
-    return tf.abs(x)
 
 def linear(x):
     """ Linear.
