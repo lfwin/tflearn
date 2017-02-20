@@ -11,7 +11,90 @@ from .. import activations
 from .. import initializations
 from .. import losses
 from .. import utils
+import math
 
+def _pos_neg_like(tensor):
+    return (tf.constant(1, dtype=tf.float32, shape=tensor.get_shape()),
+            tf.constant(-1, dtype=tf.float32, shape=tensor.get_shape()))
+
+def _XNOR_binary(W):
+    W_abs = tf.abs(W)
+    alpha = tf.reduce_mean(W_abs)
+    W_project = tf.select(W >= 0, *_pos_neg_like(W))
+    
+    W_hat = alpha * W_project
+    
+    forward = W_hat
+    backward = W
+    return backward + tf.stop_gradient(forward - backward)
+
+def xnor_conv_2d(incoming, nb_filter, filter_size, strides=1, padding='same',
+            activation='linear', bias=True, weights_init='uniform_scaling',
+            bias_init='zeros', regularizer=None, weight_decay=0.001,
+            init_g = 1.0,
+            trainable=True, restore=True, reuse=False, scope=None,
+            name="Conv2D"):
+    """ Convolution 2D using XNOR-net.
+    
+    """
+    input_shape = utils.get_incoming_shape(incoming)
+    assert len(input_shape) == 4, "Incoming Tensor shape must be 4-D"
+    filter_size = utils.autoformat_filter_conv2d(filter_size,
+                                                 input_shape[-1],
+                                                 nb_filter)
+    strides = utils.autoformat_kernel_2d(strides)
+    padding = utils.autoformat_padding(padding)
+
+    with tf.variable_op_scope([incoming], scope, name, reuse=reuse) as scope:
+        name = scope.name
+
+        W_init = weights_init
+        if isinstance(weights_init, str):
+            W_init = initializations.get(weights_init)()
+        W_regul = None
+        if regularizer:
+            W_regul = lambda x: losses.get(regularizer)(x, weight_decay)
+        W = vs.variable('W', shape=filter_size, regularizer=W_regul,
+                        initializer=W_init, trainable=trainable,
+                        restore=restore)
+
+        # Track per layer variables
+        tf.add_to_collection(tf.GraphKeys.LAYER_VARIABLES + '/' + name, W)
+
+        b = None
+        if bias:
+            if isinstance(bias_init, str):
+                bias_init = initializations.get(bias_init)()
+            b = vs.variable('b', shape=nb_filter, initializer=bias_init,
+                            trainable=trainable, restore=restore)
+            # Track per layer variables
+            tf.add_to_collection(tf.GraphKeys.LAYER_VARIABLES + '/' + name, b)
+            
+        # reparameter W
+        W_hat = _XNOR_binary(W)
+        
+        inference = tf.nn.conv2d(incoming, W_hat, strides, padding)
+        if b: inference = tf.nn.bias_add(inference, b)
+
+        if isinstance(activation, str):
+            inference = activations.get(activation)(inference)
+        elif hasattr(activation, '__call__'):
+            inference = activation(inference)
+        else:
+            raise ValueError("Invalid Activation.")
+
+        # Track activations.
+        tf.add_to_collection(tf.GraphKeys.ACTIVATIONS, inference)
+
+    # Add attributes to Tensor to easy access weights.
+    inference.scope = scope
+    inference.W = W
+    inference.b = b
+
+    # Track output tensor.
+    tf.add_to_collection(tf.GraphKeys.LAYER_TENSOR + '/' + name, inference)
+
+    return inference
 
 def conv_2d(incoming, nb_filter, filter_size, strides=1, padding='same',
             activation='linear', bias=True, weights_init='uniform_scaling',
@@ -73,7 +156,10 @@ def conv_2d(incoming, nb_filter, filter_size, strides=1, padding='same',
         name = scope.name
 
         W_init = weights_init
-        if isinstance(weights_init, str):
+        if W_init == 'he':
+            n = input_shape[3]*input_shape[1]*input_shape[2]
+            W_init = initializations.normal(stddev=math.sqrt(2/n))
+        else:
             W_init = initializations.get(weights_init)()
         W_regul = None
         if regularizer:
@@ -82,6 +168,7 @@ def conv_2d(incoming, nb_filter, filter_size, strides=1, padding='same',
                         initializer=W_init, trainable=trainable,
                         restore=restore)
 
+        W = tf.clip_by_norm(W, 1)
         # Track per layer variables
         tf.add_to_collection(tf.GraphKeys.LAYER_VARIABLES + '/' + name, W)
 
@@ -247,6 +334,52 @@ def conv_2d_transpose(incoming, nb_filter, filter_size, output_shape,
 
     return inference
 
+def ext_pool_2d(incoming, kernel_size, strides=None, padding='same',
+                name="MaxPool2D"):
+    """ Extrema Pooling 2D.
+
+    Input:
+        4-D Tensor [batch, height, width, in_channels].
+
+    Output:
+        4-D Tensor [batch, pooled height, pooled width, in_channels].
+
+    Arguments:
+        incoming: `Tensor`. Incoming 4-D Layer.
+        kernel_size: 'int` or `list of int`. Pooling kernel size.
+        strides: 'int` or `list of int`. Strides of conv operation.
+            Default: same as kernel_size.
+        padding: `str` from `"same", "valid"`. Padding algo to use.
+            Default: 'same'.
+        name: A name for this layer (optional). Default: 'SupPool2D'.
+
+    Attributes:
+        scope: `Scope`. This layer scope.
+
+    """
+    input_shape = utils.get_incoming_shape(incoming)
+    assert len(input_shape) == 4, "Incoming Tensor shape must be 4-D"
+
+    kernel = utils.autoformat_kernel_2d(kernel_size)
+    strides = utils.autoformat_kernel_2d(strides) if strides else kernel
+    padding = utils.autoformat_padding(padding)
+
+    with tf.name_scope(name) as scope:
+        pos = tf.nn.max_pool(tf.nn.relu(incoming), kernel, strides, padding)
+        neg = tf.nn.max_pool(tf.nn.relu(tf.neg(incoming)), kernel, strides, padding)
+        neg = tf.neg(neg)
+        inference = pos + neg
+        
+        # Track activations.
+        tf.add_to_collection(tf.GraphKeys.ACTIVATIONS, inference)
+
+    # Add attributes to Tensor to easy access weights
+    inference.scope = scope
+
+    # Track output tensor.
+    tf.add_to_collection(tf.GraphKeys.LAYER_TENSOR + '/' + name, inference)
+
+    return inference
 
 def max_pool_2d(incoming, kernel_size, strides=None, padding='same',
                 name="MaxPool2D"):
@@ -1012,6 +1145,114 @@ def residual_block(incoming, nb_blocks, out_channels, downsample=False,
 
     return resnet
 
+
+def residual_block_biRelu(incoming, nb_blocks, out_channels, downsample=False,
+                   downsample_strides=2, activation='relu', batch_norm=True,
+                   bias=True, weights_init='variance_scaling',
+                   bias_init='zeros', regularizer='L2', weight_decay=0.0001,
+                   trainable=True, restore=True, reuse=False, scope=None,
+                   name="ResidualBlock"):
+    """ Residual Block.
+
+    A residual block as described in MSRA's Deep Residual Network paper.
+    Full pre-activation architecture is used here.
+
+    Input:
+        4-D Tensor [batch, height, width, in_channels].
+
+    Output:
+        4-D Tensor [batch, new height, new width, nb_filter].
+
+    Arguments:
+        incoming: `Tensor`. Incoming 4-D Layer.
+        nb_blocks: `int`. Number of layer blocks.
+        out_channels: `int`. The number of convolutional filters of the
+            convolution layers.
+        downsample: `bool`. If True, apply downsampling using
+            'downsample_strides' for strides.
+        downsample_strides: `int`. The strides to use when downsampling.
+        activation: `str` (name) or `function` (returning a `Tensor`).
+            Activation applied to this layer (see tflearn.activations).
+            Default: 'linear'.
+        batch_norm: `bool`. If True, apply batch normalization.
+        bias: `bool`. If True, a bias is used.
+        weights_init: `str` (name) or `Tensor`. Weights initialization.
+            (see tflearn.initializations) Default: 'uniform_scaling'.
+        bias_init: `str` (name) or `tf.Tensor`. Bias initialization.
+            (see tflearn.initializations) Default: 'zeros'.
+        regularizer: `str` (name) or `Tensor`. Add a regularizer to this
+            layer weights (see tflearn.regularizers). Default: None.
+        weight_decay: `float`. Regularizer decay parameter. Default: 0.001.
+        trainable: `bool`. If True, weights will be trainable.
+        restore: `bool`. If True, this layer weights will be restored when
+            loading a model.
+        reuse: `bool`. If True and 'scope' is provided, this layer variables
+            will be reused (shared).
+        scope: `str`. Define this layer scope (optional). A scope can be
+            used to share variables between layers. Note that scope will
+            override name.
+        name: A name for this layer (optional). Default: 'ShallowBottleneck'.
+
+    References:
+        - Deep Residual Learning for Image Recognition. Kaiming He, Xiangyu
+            Zhang, Shaoqing Ren, Jian Sun. 2015.
+        - Identity Mappings in Deep Residual Networks. Kaiming He, Xiangyu
+            Zhang, Shaoqing Ren, Jian Sun. 2015.
+
+    Links:
+        - [http://arxiv.org/pdf/1512.03385v1.pdf]
+            (http://arxiv.org/pdf/1512.03385v1.pdf)
+        - [Identity Mappings in Deep Residual Networks]
+            (https://arxiv.org/pdf/1603.05027v2.pdf)
+
+    """
+    resnet = incoming
+    in_channels = incoming.get_shape().as_list()[-1]
+
+    with tf.variable_op_scope([incoming], scope, name, reuse=reuse) as scope:
+        name = scope.name #TODO
+
+        for i in range(nb_blocks):
+
+            identity = resnet
+
+            if not downsample:
+                downsample_strides = 1
+
+            if batch_norm:
+                resnet = tflearn.batch_normalization(resnet)
+            resnet = tflearn.activation(resnet, activation)
+
+            resnet = conv_2d(resnet, out_channels, 3,
+                             downsample_strides, 'same', 'linear',
+                             bias, weights_init, bias_init,
+                             regularizer, weight_decay, trainable,
+                             restore)
+
+            if batch_norm:
+                resnet = tflearn.batch_normalization(resnet)
+            resnet = tflearn.activation(resnet, activation)
+
+            resnet = conv_2d(resnet, out_channels, 3, 1, 'same',
+                             'linear', bias, weights_init,
+                             bias_init, regularizer, weight_decay,
+                             trainable, restore)
+
+            # Downsampling
+            if downsample_strides > 1:
+                identity = tflearn.avg_pool_2d(identity, 1,
+                                               downsample_strides)
+
+            # Projection to new dimension
+            if in_channels != out_channels:
+                ch = (out_channels - in_channels)//2
+                identity = tf.pad(identity,
+                                  [[0, 0], [0, 0], [0, 0], [ch, ch]])
+                in_channels = out_channels
+
+            resnet = resnet + identity
+
+    return resnet
 
 def residual_bottleneck(incoming, nb_blocks, bottleneck_size, out_channels,
                         downsample=False, downsample_strides=2,

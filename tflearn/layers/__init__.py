@@ -1,6 +1,6 @@
 from __future__ import absolute_import
-from .conv import conv_2d, max_pool_2d, avg_pool_2d, conv_1d, \
-    max_pool_1d, avg_pool_1d, residual_block, residual_bottleneck, \
+from .conv import repara_conv_2d, conv_2d, max_pool_2d, ext_pool_2d, avg_pool_2d, conv_1d, \
+    max_pool_1d, avg_pool_1d, residual_block, residual_block_biRelu, residual_bottleneck, \
     highway_conv_1d, highway_conv_2d
 from .core import input_data, dropout, custom_layer, reshape, flatten, \
     activation, fully_connected, single_unit, one_hot_encoding, time_distributed
